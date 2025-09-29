@@ -75,6 +75,15 @@ def test_dependency_callable_only_branch():
     assert check.check_route(route) is None  # passes because callable matches
 
 
+def test_dependency_extra_dependencies_as_list():
+    def custom_dep():
+        pass
+    # Test that extra_dependencies accepts a list
+    check = DependencySecurityCheck(extra_dependencies=[custom_dep])
+    route = FakeRoute(dependant=FakeDependant(dependencies=[FakeDep(custom_dep)]))
+    assert check.check_route(route) is None  # passes because callable matches
+
+
 def test_dependency_missing():
     check = DependencySecurityCheck()
     route = FakeRoute()

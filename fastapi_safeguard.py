@@ -21,6 +21,7 @@ from typing import (
     Sequence,
     Set,
     Type,
+    Union,
     get_origin,
     Dict,
 )
@@ -155,7 +156,7 @@ class DependencySecurityCheck(SecurityCheck):
     def __init__(
         self,
         allowed_unsecured: Optional[Sequence[str]] = None,
-        extra_dependencies: Optional[Set[Any]] = None,
+        extra_dependencies: Optional[Union[List[Any], Set[Any]]] = None,
     ) -> None:
         self.allowed_unsecured = set(allowed_unsecured or DEFAULT_ALLOWED_UNSECURED)
         raw = set(self.DEFAULT_SECURITY_DEPENDENCIES)
@@ -511,7 +512,7 @@ class AdminRouteOpenCheck(RouteCheck):
 def recommended_checks(
     *,
     allowed_unsecured: Optional[Sequence[str]] = None,
-    extra_dependencies: Optional[Set[Any]] = None,
+    extra_dependencies: Optional[Union[List[Any], Set[Any]]] = None,
 ) -> List[SecurityCheck]:
     """Return a curated set of checks considered a strong default.
 
@@ -587,7 +588,7 @@ class FastAPISafeguard:
         cls,
         *,
         allowed_unsecured: Optional[Sequence[str]] = None,
-        extra_dependencies: Optional[Set[Any]] = None,
+        extra_dependencies: Optional[Union[List[Any], Set[Any]]] = None,
         baseline_path: Optional[str] = None,
         update_baseline: Optional[bool] = None,
     ) -> "FastAPISafeguard":
@@ -658,82 +659,95 @@ class FastAPISafeguard:
         print()
 
     # -------- Lifespan --------
-    def lifespan(self):
-        @asynccontextmanager
-        async def _lifespan(app: FastAPI):
-            for _chk in self.checks:
-                setattr(_chk, "_root_app", app)
-            findings: List[str] = []
-            category_map: Dict[str, List[str]] = {}
-            category_owasp: Dict[str, Set[str]] = {}
-            # App-level checks
-            for check in self.checks:
-                app_check_fn = getattr(check, "app_check", None)
-                if callable(app_check_fn):
-                    res = app_check_fn(app)
+    def run_checks(self, app: FastAPI) -> None:
+        """Run all security checks on the FastAPI app and exit on failures.
+
+        This method can be called from within a custom lifespan context manager
+        for apps that already have their own lifespan logic.
+
+        Args:
+            app: The FastAPI application instance to check.
+
+        Raises:
+            SystemExit: If new security findings are detected and not in baseline.
+        """
+        for _chk in self.checks:
+            setattr(_chk, "_root_app", app)
+        findings: List[str] = []
+        category_map: Dict[str, List[str]] = {}
+        category_owasp: Dict[str, Set[str]] = {}
+        # App-level checks
+        for check in self.checks:
+            app_check_fn = getattr(check, "app_check", None)
+            if callable(app_check_fn):
+                res = app_check_fn(app)
+                if res:
+                    findings.append(res)
+                    cat = getattr(check, 'CATEGORY', 'general')
+                    category_map.setdefault(cat, []).append(res)
+                    for code in getattr(check, 'OWASP', []):
+                        category_owasp.setdefault(cat, set()).add(code)
+        route_count = 0
+        for route in app.routes:
+            if isinstance(route, APIRoute):
+                route_count += 1
+                for check in self.checks:
+                    res = check.check_route(route)
                     if res:
                         findings.append(res)
                         cat = getattr(check, 'CATEGORY', 'general')
                         category_map.setdefault(cat, []).append(res)
                         for code in getattr(check, 'OWASP', []):
                             category_owasp.setdefault(cat, set()).add(code)
-            route_count = 0
-            for route in app.routes:
-                if isinstance(route, APIRoute):
-                    route_count += 1
-                    for check in self.checks:
-                        res = check.check_route(route)
-                        if res:
-                            findings.append(res)
-                            cat = getattr(check, 'CATEGORY', 'general')
-                            category_map.setdefault(cat, []).append(res)
-                            for code in getattr(check, 'OWASP', []):
-                                category_owasp.setdefault(cat, set()).add(code)
 
-            baseline = self._load_baseline()
-            current = set(findings)
-            new = current - baseline
-            resolved = baseline - current if baseline else set()
+        baseline = self._load_baseline()
+        current = set(findings)
+        new = current - baseline
+        resolved = baseline - current if baseline else set()
 
-            # Always print summary (it reflects current findings regardless of baseline state)
-            if findings:
-                self._print_category_summary(category_map, new, category_owasp)
+        # Always print summary (it reflects current findings regardless of baseline state)
+        if findings:
+            self._print_category_summary(category_map, new, category_owasp)
 
-            if findings:
-                if new:
-                    if self.update_baseline:
-                        self._write_baseline(findings)
-                        print("✅ Security checks passed with new findings accepted into baseline.")
-                    else:
-                        print("❌ Security check failed: new findings detected (not in baseline):")
-                        for f in sorted(new):
-                            print(f"  + {f}")
-                        if baseline:
-                            accepted_only = current & baseline
-                            if accepted_only:
-                                print("ℹ️  Previously accepted findings (baseline):")
-                                for f in sorted(accepted_only):
-                                    print(f"    = {f}")
-                        print("\nTo accept current findings run with SECURITY_BASELINE_UPDATE=1 or set update_baseline=True.")
-                        sys.exit(1)
+        if findings:
+            if new:
+                if self.update_baseline:
+                    self._write_baseline(findings)
+                    print("✅ Security checks passed with new findings accepted into baseline.")
                 else:
-                    if self.update_baseline and resolved:
-                        self._write_baseline(findings)
-                        print("✅ All security findings match baseline (baseline refreshed removing resolved items).")
-                    else:
-                        print(f"✅ All security findings match accepted baseline ({len(findings)} accepted).")
-                        if resolved:
-                            print(f"ℹ️  {len(resolved)} previously accepted finding(s) resolved; run with SECURITY_BASELINE_UPDATE=1 to prune baseline.")
+                    print("❌ Security check failed: new findings detected (not in baseline):")
+                    for f in sorted(new):
+                        print(f"  + {f}")
+                    if baseline:
+                        accepted_only = current & baseline
+                        if accepted_only:
+                            print("ℹ️  Previously accepted findings (baseline):")
+                            for f in sorted(accepted_only):
+                                print(f"    = {f}")
+                    print("\nTo accept current findings run with SECURITY_BASELINE_UPDATE=1 or set update_baseline=True.")
+                    sys.exit(1)
             else:
-                if baseline:
-                    if self.update_baseline:
-                        self._write_baseline([])
-                        print("✅ No security findings. Baseline cleared (was non-empty).")
-                    else:
-                        print("✅ No security findings. (Baseline exists – run with SECURITY_BASELINE_UPDATE=1 to clear.)")
+                if self.update_baseline and resolved:
+                    self._write_baseline(findings)
+                    print("✅ All security findings match baseline (baseline refreshed removing resolved items).")
                 else:
-                    print(f"✅ All security checks passed (0 findings, {route_count} routes, {len(self.checks)} checks).")
+                    print(f"✅ All security findings match accepted baseline ({len(findings)} accepted).")
+                    if resolved:
+                        print(f"ℹ️  {len(resolved)} previously accepted finding(s) resolved; run with SECURITY_BASELINE_UPDATE=1 to prune baseline.")
+        else:
+            if baseline:
+                if self.update_baseline:
+                    self._write_baseline([])
+                    print("✅ No security findings. Baseline cleared (was non-empty).")
+                else:
+                    print("✅ No security findings. (Baseline exists – run with SECURITY_BASELINE_UPDATE=1 to clear.)")
+            else:
+                print(f"✅ All security checks passed (0 findings, {route_count} routes, {len(self.checks)} checks).")
 
+    def lifespan(self):
+        @asynccontextmanager
+        async def _lifespan(app: FastAPI):
+            self.run_checks(app)
             yield
 
         return _lifespan

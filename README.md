@@ -184,12 +184,12 @@ from fastapi_safeguard import (
     RateLimitingPresenceCheck,
 )
 
-plugin = FastAPISafeguard(checks=[
+safeguard = FastAPISafeguard(checks=[
     *FastAPISafeguard.recommended().checks,
     HTTPSRedirectMiddlewareCheck(),  # Often handled by infrastructure
     RateLimitingPresenceCheck(),      # Often external (API gateway)
 ])
-app = FastAPI(lifespan=plugin.lifespan())
+app = FastAPI(lifespan=safeguard.lifespan())
 ```
 
 ### Custom Configuration
@@ -201,15 +201,43 @@ from fastapi_safeguard import (
     PaginationEnforcementCheck,
 )
 
-plugin = FastAPISafeguard(checks=[
+safeguard = FastAPISafeguard(checks=[
     DependencySecurityCheck(
         allowed_unsecured=["/openapi.json", "/docs", "/health"],
-        extra_dependencies={my_custom_auth_dep}
+        extra_dependencies=[my_custom_auth_dep]  # accepts list or set
     ),
     ResponseModelSecurityCheck(),
     PaginationEnforcementCheck(),
 ])
-app = FastAPI(lifespan=plugin.lifespan())
+app = FastAPI(lifespan=safeguard.lifespan())
+```
+
+### Integration with Custom Lifespan
+If your app already has a custom lifespan context manager, use `run_checks()` instead:
+
+```python
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from fastapi_safeguard import FastAPISafeguard
+
+safeguard = FastAPISafeguard.recommended()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Run security checks at startup
+    safeguard.run_checks(app)
+
+    # Your custom startup logic
+    print("Starting up with custom logic...")
+    db_connection = await setup_database()
+
+    yield  # App is running
+
+    # Your custom shutdown logic
+    await db_connection.close()
+    print("Shutting down...")
+
+app = FastAPI(lifespan=lifespan)
 ```
 
 ---
@@ -250,7 +278,7 @@ Available for manual addition. These have higher false positive rates or are oft
 ```python
 from fastapi_safeguard import FastAPISafeguard, HTTPSRedirectMiddlewareCheck
 
-plugin = FastAPISafeguard(checks=[
+safeguard = FastAPISafeguard(checks=[
     *FastAPISafeguard.recommended().checks,
     HTTPSRedirectMiddlewareCheck(),  # Add as needed
 ])
@@ -396,7 +424,7 @@ schema                 2     0         2   API3/API6
 ---
 ## Configuration & Extensibility
 ```python
-plugin = FastAPISafeguard(
+safeguard = FastAPISafeguard(
     checks=[
         DependencySecurityCheck(extra_dependencies={my_custom_dep}),
         ResponseModelSecurityCheck(),
@@ -430,7 +458,7 @@ class EnforceJsonCheck(SecurityCheck):
         # Return a finding string or None
         return None
 
-plugin = FastAPISafeguard(checks=[EnforceJsonCheck(), ...])
+safeguard = FastAPISafeguard(checks=[EnforceJsonCheck(), ...])
 ```
 Rules:
 - Return `None` when compliant.

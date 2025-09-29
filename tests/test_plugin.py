@@ -2,6 +2,7 @@ import json
 import re
 import types
 from pathlib import Path
+from contextlib import asynccontextmanager
 
 import pytest
 from fastapi import FastAPI, Depends, Body
@@ -363,6 +364,35 @@ async def test_baseline_resolved_and_prune(baseline, capsys):
     with open(baseline) as f:
         data = json.load(f)
     assert data["accepted_findings"] == []
+
+@pytest.mark.asyncio
+async def test_run_checks_with_custom_lifespan(baseline, capsys):
+    """Test that run_checks() works when called from a custom lifespan."""
+    plugin = FastAPISafeguard(checks=[DependencySecurityCheck()], baseline_path=str(baseline), update_baseline=True)
+
+    @asynccontextmanager
+    async def custom_lifespan(app: FastAPI):
+        # Custom startup
+        plugin.run_checks(app)
+        yield
+        # Custom shutdown (nothing here)
+
+    app = FastAPI(lifespan=custom_lifespan)
+
+    @app.get("/noauth")
+    async def noauth():
+        return {"ok": True}
+
+    await run_startup(app)
+    out = capsys.readouterr().out
+    assert "Security checks passed with new findings accepted into baseline" in out
+    assert baseline.exists()
+
+    # Verify baseline was created
+    with open(baseline) as f:
+        data = json.load(f)
+    assert len(data["accepted_findings"]) == 1
+    assert "no accepted security dependency" in data["accepted_findings"][0]
 
 @pytest.mark.asyncio
 async def test_invalid_baseline_parsing(baseline, capsys):
