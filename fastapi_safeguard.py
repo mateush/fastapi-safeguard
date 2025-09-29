@@ -512,7 +512,6 @@ def recommended_checks(
     *,
     allowed_unsecured: Optional[Sequence[str]] = None,
     extra_dependencies: Optional[Set[Any]] = None,
-    include_heuristics: bool = True,
 ) -> List[SecurityCheck]:
     """Return a curated set of checks considered a strong default.
 
@@ -548,15 +547,6 @@ def recommended_checks(
         CORSMisconfigurationCheck(),
         DebugModeCheck(),
     ]
-
-    # Heuristics are intentionally minimal - most removed due to high false positives
-    # or being better handled at infrastructure level. Users can add them manually if needed.
-    if include_heuristics:
-        # Currently no heuristic checks recommended by default
-        # Available but not included: HTTPSRedirectMiddlewareCheck, TrustedHostMiddlewareCheck,
-        # RateLimitingPresenceCheck, ReturnTypeAnnotationCheck, WildcardPathCheck,
-        # DangerousMethodExposureCheck, SSRFParameterCheck, AdminRouteOpenCheck
-        pass
     return core
 
 
@@ -598,19 +588,14 @@ class FastAPISafeguard:
         *,
         allowed_unsecured: Optional[Sequence[str]] = None,
         extra_dependencies: Optional[Set[Any]] = None,
-        include_heuristics: bool = True,
         baseline_path: Optional[str] = None,
         update_baseline: Optional[bool] = None,
     ) -> "FastAPISafeguard":
         """Instantiate plugin with the recommended preset of checks.
-
-        include_heuristics=False will exclude softer heuristic checks (rate limiting presence, SSRF params,
-        dangerous methods, admin route exposure) while keeping core OWASP-aligned checks.
         """
         checks = recommended_checks(
             allowed_unsecured=allowed_unsecured,
             extra_dependencies=extra_dependencies,
-            include_heuristics=include_heuristics,
         )
         return cls(
             checks=checks,

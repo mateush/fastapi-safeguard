@@ -335,14 +335,13 @@ def test_recommended_preset_includes_heuristics():
 
 
 def test_recommended_preset_excludes_heuristics():
-    # Both with and without heuristics flag should be identical now
-    plugin = FastAPISafeguard.recommended(include_heuristics=False)
+    plugin = FastAPISafeguard.recommended()
     names = {type(c).__name__ for c in plugin.checks}
     assert not ({"RateLimitingPresenceCheck", "DangerousMethodExposureCheck", "SSRFParameterCheck", "AdminRouteOpenCheck"} & names)
     assert "DependencySecurityCheck" in names
 
 
 def test_recommended_checks_function_equivalence():
-    a = recommended_checks(include_heuristics=False)
-    b = FastAPISafeguard.recommended(include_heuristics=False).checks
+    a = recommended_checks()
+    b = FastAPISafeguard.recommended().checks
     assert {type(c).__name__ for c in a} == {type(c).__name__ for c in b}
