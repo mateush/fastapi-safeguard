@@ -214,37 +214,62 @@ app = FastAPI(lifespan=plugin.lifespan())
 
 ---
 ## Security Checks Reference
-| Check | Category | Purpose | Example Finding |
-|-------|----------|---------|-----------------|
-| DependencySecurityCheck | auth | Ensures at least one accepted auth / security dependency | `GET /items has no accepted security dependency` |
-| UnsecuredAllowedMethodsCheck | auth | Prevents unsafe methods on declared unsecured paths | `POST /status exposes unsafe method(s) without security` |
-| ResponseModelSecurityCheck | schema | Enforces explicit response models for unsafe methods | `POST /users missing response_model...` |
-| BodyModelEnforcementCheck | schema | Discourages raw dict/list bodies (mass assignment) | `PATCH /users uses non-model raw body param(s): payload` |
-| ReturnTypeAnnotationCheck | schema | Encourages type annotations when no response_model | `GET /ping has neither response_model nor return type annotation` |
-| SensitiveFieldExposureCheck | data_exposure | Flags sensitive-looking response fields | `GET /auth/me response_model exposes potentially sensitive fields: password` |
-| SensitiveQueryParamCheck | data_exposure | Flags sensitive-looking query parameter names | `GET /login exposes potentially sensitive data via query params: token` |
-| PaginationEnforcementCheck | performance | Promotes pagination controls on list endpoints | `GET /reports returns a collection without pagination params (limit/offset/page/page_size)` |
-| WildcardPathCheck | routing | Warns on broad catch-all path params | `GET /files/{path:path} uses broad wildcard path parameter (:path)` |
-| CORSMisconfigurationCheck | config | Detects overly permissive CORS with credentials | `CORS misconfiguration: allow_origins='*'` |
-| HTTPSRedirectMiddlewareCheck | config | Suggests enforcing HTTPS redirect | `HTTPS redirect middleware not configured...` |
-| TrustedHostMiddlewareCheck | config | Suggests host header protection | `TrustedHostMiddleware not configured...` |
-| RateLimitingPresenceCheck | performance | Heuristic: missing rate limiting middleware | `No apparent rate limiting middleware detected...` |
-| DebugModeCheck | config | Fails if running with `debug=True` | `Application running in debug mode` |
+
+### ✅ Core Checks (Included in Recommended Preset)
+
+High-value checks with low false positives, included by default when using `FastAPISafeguard.recommended()`:
+
+| Check | Category | OWASP | Purpose | Example Finding |
+|-------|----------|-------|---------|-----------------|
+| **DependencySecurityCheck** | auth | API2, API5 | Ensures at least one accepted auth/security dependency | `GET /items has no accepted security dependency` |
+| **UnsecuredAllowedMethodsCheck** | auth | API5 | Prevents unsafe methods on declared unsecured paths | `POST /status exposes unsafe method(s) without security` |
+| **ResponseModelSecurityCheck** | schema | API3 | Enforces explicit response models for unsafe methods | `POST /users missing response_model...` |
+| **BodyModelEnforcementCheck** | schema | API3, API6 | Prevents raw dict/list bodies (mass assignment) | `PATCH /users uses non-model raw body param(s): payload` |
+| **SensitiveFieldExposureCheck** | data_exposure | API3 | Flags sensitive-looking response fields | `GET /auth/me response_model exposes potentially sensitive fields: password` |
+| **SensitiveQueryParamCheck** | data_exposure | API3 | Flags sensitive-looking query parameter names | `GET /login exposes potentially sensitive data via query params: token` |
+| **PaginationEnforcementCheck** | performance | API4 | Promotes pagination controls on list endpoints | `GET /reports returns a collection without pagination params` |
+| **CORSMisconfigurationCheck** | config | API8 | Detects overly permissive CORS with credentials | `CORS misconfiguration: allow_origins='*', credentials allowed` |
+| **DebugModeCheck** | config | API8 | Fails if running with `debug=True` | `Application running in debug mode` |
+
+### 🔧 Optional Checks (Not Included by Default)
+
+Available for manual addition. These have higher false positive rates or are often handled at infrastructure level:
+
+| Check | Category | OWASP | Purpose | Why Not Default |
+|-------|----------|-------|---------|-----------------|
+| **HTTPSRedirectMiddlewareCheck** | config | API8 | Suggests enforcing HTTPS redirect | Usually handled by load balancer/reverse proxy |
+| **TrustedHostMiddlewareCheck** | config | API8 | Suggests host header protection | Usually handled upstream |
+| **RateLimitingPresenceCheck** | performance | API4 | Heuristic: missing rate limiting middleware | Often external (API gateway, nginx), weak heuristic |
+| **ReturnTypeAnnotationCheck** | schema | API3 | Encourages type annotations when no response_model | Too noisy, not a security issue |
+| **WildcardPathCheck** | routing | API3, API5 | Warns on broad catch-all path params | Legitimate use cases (file serving) |
+| **DangerousMethodExposureCheck** | http_methods | - | Flags TRACE/CONNECT methods | Rarely exposed via FastAPI, non-issue in practice |
+| **SSRFParameterCheck** | ssrf | - | Detects query params like 'url', 'uri', 'target' | Too many false positives |
+| **AdminRouteOpenCheck** | auth | - | Flags routes with '/admin' in path without deps | Weak heuristic based on path naming |
+
+**To use optional checks:**
+```python
+from fastapi_safeguard import FastAPISafeguard, HTTPSRedirectMiddlewareCheck
+
+plugin = FastAPISafeguard(checks=[
+    *FastAPISafeguard.recommended().checks,
+    HTTPSRedirectMiddlewareCheck(),  # Add as needed
+])
+```
 
 ---
 ## OWASP API Top 10 Coverage
-(2023 naming – abbreviated)
+Coverage by **core checks only** (included in recommended preset):
 
-| OWASP Code | Risk (Short) | Covered By |
-|------------|--------------|-----------|
-| API2 | Broken Authentication | DependencySecurityCheck |
-| API3 | Excessive Data / Object Property Level Exposure | ResponseModelSecurityCheck, BodyModelEnforcementCheck, ReturnTypeAnnotationCheck, SensitiveFieldExposureCheck, SensitiveQueryParamCheck, WildcardPathCheck (partial) |
-| API4 | Unrestricted Resource Consumption | PaginationEnforcementCheck, RateLimitingPresenceCheck |
-| API5 | Broken Function Level Authorization | DependencySecurityCheck, UnsecuredAllowedMethodsCheck, WildcardPathCheck |
-| API6 | Mass Assignment | BodyModelEnforcementCheck |
-| API8 | Security Misconfiguration | CORSMisconfigurationCheck, HTTPSRedirectMiddlewareCheck, TrustedHostMiddlewareCheck, DebugModeCheck |
+| OWASP Code | Risk (Short) | Core Checks | Optional Checks Available |
+|------------|--------------|-------------|---------------------------|
+| API2 | Broken Authentication | DependencySecurityCheck | - |
+| API3 | Excessive Data / Object Property Level Exposure | ResponseModelSecurityCheck, BodyModelEnforcementCheck, SensitiveFieldExposureCheck, SensitiveQueryParamCheck | ReturnTypeAnnotationCheck, WildcardPathCheck |
+| API4 | Unrestricted Resource Consumption | PaginationEnforcementCheck | RateLimitingPresenceCheck |
+| API5 | Broken Function Level Authorization | DependencySecurityCheck, UnsecuredAllowedMethodsCheck | WildcardPathCheck |
+| API6 | Mass Assignment | BodyModelEnforcementCheck | - |
+| API8 | Security Misconfiguration | CORSMisconfigurationCheck, DebugModeCheck | HTTPSRedirectMiddlewareCheck, TrustedHostMiddlewareCheck |
 
-> Note: Some checks partially contribute to multiple categories; coverage emphasizes *detection* not *remediation*.
+> **Note:** Core checks provide solid coverage out-of-the-box. Optional checks can supplement coverage but have higher false positive rates.
 
 ---
 ## Decorators
