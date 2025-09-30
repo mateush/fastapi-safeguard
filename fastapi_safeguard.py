@@ -1,3 +1,23 @@
+"""FastAPI Safeguard - Security auditing framework for FastAPI applications.
+
+This module provides a comprehensive security checking system for FastAPI applications,
+detecting common vulnerabilities aligned with OWASP API Security Top 10.
+
+The framework includes:
+- Authentication and authorization enforcement
+- Data exposure prevention
+- Resource consumption protection
+- Security misconfiguration detection
+- Baseline management for accepted findings
+
+Example:
+    >>> from fastapi import FastAPI
+    >>> from fastapi_safeguard import FastAPISafeguard
+    >>>
+    >>> app = FastAPI(lifespan=FastAPISafeguard.recommended().get_lifespan())
+
+For more information, see the documentation at https://github.com/yourusername/fastapi-safeguard
+"""
 from __future__ import annotations
 
 from fastapi import FastAPI, UploadFile
@@ -84,12 +104,16 @@ def _route_dependencies(route: APIRoute) -> List[Callable]:
 class SecurityCheck(ABC):
     """Contract for a security check.
 
-    check_route returns:
-      - None if the route passes the check or is skipped.
-      - A string (finding) describing the security issue otherwise.
+    Attributes:
+        CATEGORY: Classification category for reporting (e.g., 'auth', 'schema').
+        OWASP: List of related OWASP API Security Top 10 identifiers (e.g., ['API3']).
+
+    Returns:
+        check_route: None if the route passes the check, otherwise a string describing
+                     the security issue.
     """
     CATEGORY = "general"
-    OWASP: list[str] = []  # e.g. ["API3"]
+    OWASP: List[str] = []  # e.g. ["API3"]
 
     @abstractmethod
     def check_route(self, route: APIRoute) -> Optional[str]:  # pragma: no cover - interface
@@ -97,14 +121,27 @@ class SecurityCheck(ABC):
 
 
 class RouteCheck(SecurityCheck):
-    """Base for checks needing allowed_unsecured handling and skip_all support."""
+    """Base for checks needing allowed_unsecured handling and skip_all support.
+
+    Args:
+        allowed_unsecured: Paths that should be excluded from checks
+                          (defaults to /openapi.json, /docs, /redoc).
+    """
 
     def __init__(self, allowed_unsecured: Optional[Sequence[str]] = None) -> None:
         self.allowed_unsecured: Set[str] = set(allowed_unsecured or DEFAULT_ALLOWED_UNSECURED)
 
-    # Subclasses override _analyze for core logic.
+    @abstractmethod
     def _analyze(self, route: APIRoute) -> Optional[str]:  # pragma: no cover - interface
-        return None
+        """Core check logic implemented by subclasses.
+
+        Args:
+            route: The FastAPI route to analyze.
+
+        Returns:
+            None if check passes, otherwise a finding description.
+        """
+        ...
 
     def check_route(self, route: APIRoute) -> Optional[str]:
         if _skip_all(route):
@@ -165,6 +202,23 @@ class DependencySecurityCheck(SecurityCheck):
         self.accepted_type_dependencies: Set[Type] = {d for d in raw if isinstance(d, type)}
         self.accepted_callable_dependencies: Set[Callable] = {d for d in raw if not isinstance(d, type)}
 
+    def _has_accepted_dependency(self, deps: List[Callable]) -> bool:
+        """Check if any dependency matches accepted security dependencies.
+
+        Args:
+            deps: List of dependency callables from route.
+
+        Returns:
+            True if at least one accepted dependency is found.
+        """
+        types_tuple = tuple(self.accepted_type_dependencies)
+        for dep in deps:
+            if types_tuple and isinstance(dep, types_tuple):
+                return True
+            if dep in self.accepted_callable_dependencies:
+                return True
+        return False
+
     def check_route(self, route: APIRoute) -> Optional[str]:
         if _skip_all(route):
             return None
@@ -173,8 +227,7 @@ class DependencySecurityCheck(SecurityCheck):
         if route.path in self.allowed_unsecured:
             return None
         deps = _route_dependencies(route)
-        types_tuple = tuple(self.accepted_type_dependencies)
-        if any(((isinstance(d, types_tuple)) if types_tuple else False) or (d in self.accepted_callable_dependencies) for d in deps):
+        if self._has_accepted_dependency(deps):
             return None
         return f"{','.join(route.methods)} {route.path} has no accepted security dependency"
 
@@ -204,9 +257,20 @@ class UnsecuredAllowedMethodsCheck(RouteCheck):
         super().__init__(allowed_unsecured)
         self.safe = {m.upper() for m in (safe_methods or ["GET", "HEAD", "OPTIONS"])}
 
-    def check_route(self, route: APIRoute) -> Optional[str]:  # override; logic differs
+    def _analyze(self, route: APIRoute) -> Optional[str]:
+        """Check if allowed unsecured paths expose unsafe methods.
+
+        This check has inverted logic: it ONLY checks routes in allowed_unsecured.
+        """
+        # This will never be called by RouteCheck.check_route() for paths in allowed_unsecured
+        # So we override check_route() instead
+        return None
+
+    def check_route(self, route: APIRoute) -> Optional[str]:
+        """Override to invert the allowed_unsecured logic."""
         if _skip_all(route):
             return None
+        # Only check routes that ARE in allowed_unsecured
         if route.path not in self.allowed_unsecured:
             return None
         unsafe = [m for m in route.methods if m not in self.safe]
@@ -353,8 +417,12 @@ class SensitiveFieldExposureCheck(RouteCheck):
             if hasattr(model, "model_fields")
             else list(getattr(model, "__fields__", {}).keys())
         )
-        lower = [f.lower() for f in field_names]
-        hits = {f for f in lower for sub in SUSPICIOUS_FIELD_PARTS if sub in f}
+        hits = {
+            name_lower
+            for name in field_names
+            if (name_lower := name.lower())
+            and any(sub in name_lower for sub in SUSPICIOUS_FIELD_PARTS)
+        }
         if hits:
             return f"{','.join(route.methods)} {route.path} response_model exposes potentially sensitive fields: {','.join(sorted(hits))}"
         return None
@@ -459,7 +527,7 @@ class DangerousMethodExposureCheck(RouteCheck):
     These methods are almost never required in public APIs and can aid in fingerprinting or tunneling.
     """
     CATEGORY = "http_methods"
-    OWASP: list[str] = []  # informational
+    OWASP: List[str] = []  # informational
     DANGEROUS = {"TRACE", "CONNECT"}
 
     def _analyze(self, route: APIRoute) -> Optional[str]:
@@ -474,7 +542,7 @@ class SSRFParameterCheck(RouteCheck):
     Purely heuristic – encourages explicit allowlists or validation for remote resource fetches.
     """
     CATEGORY = "ssrf"
-    OWASP: list[str] = []  # informational
+    OWASP: List[str] = []  # informational
     RISKY = {"url", "uri", "target", "endpoint", "callback"}
 
     def __init__(self, allowed_unsecured: Optional[Sequence[str]] = None, allowlist: Optional[Iterable[str]] = None) -> None:
@@ -499,7 +567,7 @@ class AdminRouteOpenCheck(RouteCheck):
     Heuristic: path contains '/admin' and dependant.dependencies is empty.
     """
     CATEGORY = "auth"
-    OWASP: list[str] = []  # informational
+    OWASP: List[str] = []  # informational
 
     def _analyze(self, route: APIRoute) -> Optional[str]:
         if "/admin" in route.path.lower():
@@ -527,7 +595,7 @@ def recommended_checks(
     - Heuristic-based checks (dangerous methods, SSRF params, admin routes, wildcard paths)
     - Type annotation enforcement
     """
-    allowed_unsecured = allowed_unsecured or list(DEFAULT_ALLOWED_UNSECURED)
+    allowed_unsecured = allowed_unsecured or DEFAULT_ALLOWED_UNSECURED
 
     # High-value core checks: critical security issues with low false positives
     core: List[SecurityCheck] = [
@@ -573,15 +641,42 @@ class FastAPISafeguard:
         update_baseline: Optional[bool] = None,
     ) -> None:
         self.checks: List[SecurityCheck] = checks or [DependencySecurityCheck()]
-        self.baseline_path = (
+        raw_path = (
             baseline_path
             or os.environ.get("SECURITY_BASELINE_PATH")
             or "security_baseline.json"
         )
+        # Validate baseline path to prevent path traversal attacks
+        self.baseline_path = self._validate_baseline_path(raw_path)
         if update_baseline is None:
             self.update_baseline = os.environ.get("SECURITY_BASELINE_UPDATE") == "1"
         else:
             self.update_baseline = update_baseline
+
+    def _validate_baseline_path(self, path: str) -> str:
+        """Validate and normalize baseline file path for security.
+
+        Args:
+            path: Raw path from user input or environment.
+
+        Returns:
+            Validated absolute path.
+
+        Raises:
+            ValueError: If path attempts traversal outside working directory.
+        """
+        abs_path = os.path.abspath(path)
+        cwd = os.getcwd()
+        # Ensure the path is within the current working directory or is absolute
+        # This prevents malicious paths like "../../etc/passwd"
+        if not abs_path.startswith(cwd):
+            # Allow absolute paths outside cwd only if explicitly provided
+            if not os.path.isabs(path):
+                raise ValueError(
+                    f"Baseline path '{path}' resolves outside working directory. "
+                    f"Use absolute path if intentional."
+                )
+        return abs_path
 
     @classmethod
     def recommended(
@@ -614,7 +709,7 @@ class FastAPISafeguard:
             accepted = data.get("accepted_findings")
             if isinstance(accepted, list):
                 return set(accepted)
-        except Exception as exc:  # pragma: no cover - defensive
+        except (OSError, json.JSONDecodeError, ValueError, KeyError) as exc:  # pragma: no cover - defensive
             print(f"⚠️  Could not parse baseline file '{self.baseline_path}': {exc}")
         return set()
 
@@ -630,8 +725,13 @@ class FastAPISafeguard:
         try:
             with open(self.baseline_path, "w", encoding="utf-8") as f:
                 json.dump(payload, f, indent=2)
+            # Set secure permissions: owner read/write only
+            try:
+                os.chmod(self.baseline_path, 0o600)
+            except OSError:
+                pass  # Best effort; may fail on Windows or restricted environments
             print(f"💾 Updated security baseline written to {self.baseline_path}")
-        except Exception as exc:  # pragma: no cover - defensive
+        except (OSError, TypeError, ValueError) as exc:  # pragma: no cover - defensive
             print(f"⚠️  Failed to write baseline file '{self.baseline_path}': {exc}")
 
     # -------- Summary helpers --------
@@ -671,8 +771,6 @@ class FastAPISafeguard:
         Raises:
             SystemExit: If new security findings are detected and not in baseline.
         """
-        for _chk in self.checks:
-            setattr(_chk, "_root_app", app)
         findings: List[str] = []
         category_map: Dict[str, List[str]] = {}
         category_owasp: Dict[str, Set[str]] = {}
@@ -744,7 +842,15 @@ class FastAPISafeguard:
             else:
                 print(f"✅ All security checks passed (0 findings, {route_count} routes, {len(self.checks)} checks).")
 
-    def lifespan(self):
+    def get_lifespan(self):
+        """Return an async context manager for FastAPI lifespan integration.
+
+        Usage:
+            app = FastAPI(lifespan=safeguard.get_lifespan())
+
+        Returns:
+            An async context manager that runs security checks on startup.
+        """
         @asynccontextmanager
         async def _lifespan(app: FastAPI):
             self.run_checks(app)

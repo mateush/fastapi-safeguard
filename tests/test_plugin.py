@@ -61,7 +61,7 @@ class AllowedDep:
 @pytest.mark.asyncio
 async def test_dependency_check_failure_then_accept(baseline, capsys):
     plugin = FastAPISafeguard(checks=[DependencySecurityCheck()], baseline_path=str(baseline))
-    app = FastAPI(lifespan=plugin.lifespan())
+    app = FastAPI(lifespan=plugin.get_lifespan())
 
     @app.get("/noauth")
     async def noauth():
@@ -73,7 +73,7 @@ async def test_dependency_check_failure_then_accept(baseline, capsys):
 
     # Accept via update_baseline flag (constructor arg)
     plugin2 = FastAPISafeguard(checks=[DependencySecurityCheck()], baseline_path=str(baseline), update_baseline=True)
-    app2 = FastAPI(lifespan=plugin2.lifespan())
+    app2 = FastAPI(lifespan=plugin2.get_lifespan())
 
     @app2.get("/noauth")
     async def noauth2():
@@ -89,7 +89,7 @@ async def test_dependency_check_failure_then_accept(baseline, capsys):
 @pytest.mark.asyncio
 async def test_dependency_check_pass_with_dependency(baseline, capsys):
     plugin = FastAPISafeguard(checks=[DependencySecurityCheck(extra_dependencies={AllowedDep})], baseline_path=str(baseline))
-    app = FastAPI(lifespan=plugin.lifespan())
+    app = FastAPI(lifespan=plugin.get_lifespan())
 
     dep_instance = AllowedDep()
 
@@ -104,7 +104,7 @@ async def test_dependency_check_pass_with_dependency(baseline, capsys):
 @pytest.mark.asyncio
 async def test_open_route_and_disable_security(baseline, capsys):
     plugin = FastAPISafeguard(checks=[DependencySecurityCheck()], baseline_path=str(baseline))
-    app = FastAPI(lifespan=plugin.lifespan())
+    app = FastAPI(lifespan=plugin.get_lifespan())
 
     @open_route
     @app.get("/public")
@@ -123,7 +123,7 @@ async def test_open_route_and_disable_security(baseline, capsys):
 @pytest.mark.asyncio
 async def test_response_model_and_return_annotation_fail(baseline, capsys):
     plugin = FastAPISafeguard(checks=[ResponseModelSecurityCheck(), ReturnTypeAnnotationCheck()], baseline_path=str(baseline))
-    app = FastAPI(lifespan=plugin.lifespan())
+    app = FastAPI(lifespan=plugin.get_lifespan())
 
     @app.post("/create")
     async def create():  # unsafe method, no response model
@@ -137,7 +137,7 @@ async def test_response_model_and_return_annotation_fail(baseline, capsys):
 @pytest.mark.asyncio
 async def test_return_type_only_pass(baseline, capsys):
     plugin = FastAPISafeguard(checks=[ReturnTypeAnnotationCheck()], baseline_path=str(baseline))
-    app = FastAPI(lifespan=plugin.lifespan())
+    app = FastAPI(lifespan=plugin.get_lifespan())
 
     @app.get("/ok")
     async def ok() -> dict:
@@ -149,7 +149,7 @@ async def test_return_type_only_pass(baseline, capsys):
 @pytest.mark.asyncio
 async def test_body_model_enforcement_fail(baseline, capsys):
     plugin = FastAPISafeguard(checks=[BodyModelEnforcementCheck()], baseline_path=str(baseline))
-    app = FastAPI(lifespan=plugin.lifespan())
+    app = FastAPI(lifespan=plugin.get_lifespan())
 
     @app.patch("/raw")
     async def raw(payload: dict = Body(...)):
@@ -164,7 +164,7 @@ async def test_body_model_enforcement_pass(baseline, capsys):
     class Model(BaseModel):
         name: str
     plugin = FastAPISafeguard(checks=[BodyModelEnforcementCheck()], baseline_path=str(baseline))
-    app = FastAPI(lifespan=plugin.lifespan())
+    app = FastAPI(lifespan=plugin.get_lifespan())
 
     @app.patch("/raw")
     async def raw(payload: Model):
@@ -176,7 +176,7 @@ async def test_body_model_enforcement_pass(baseline, capsys):
 @pytest.mark.asyncio
 async def test_pagination_enforcement_fail(baseline, capsys):
     plugin = FastAPISafeguard(checks=[PaginationEnforcementCheck()], baseline_path=str(baseline))
-    app = FastAPI(lifespan=plugin.lifespan())
+    app = FastAPI(lifespan=plugin.get_lifespan())
 
     @app.get("/items")
     async def items() -> list[int]:
@@ -189,7 +189,7 @@ async def test_pagination_enforcement_fail(baseline, capsys):
 @pytest.mark.asyncio
 async def test_pagination_enforcement_pass(baseline, capsys):
     plugin = FastAPISafeguard(checks=[PaginationEnforcementCheck()], baseline_path=str(baseline))
-    app = FastAPI(lifespan=plugin.lifespan())
+    app = FastAPI(lifespan=plugin.get_lifespan())
 
     @app.get("/items")
     async def items(limit: int = 10) -> list[int]:
@@ -201,7 +201,7 @@ async def test_pagination_enforcement_pass(baseline, capsys):
 @pytest.mark.asyncio
 async def test_wildcard_path_check_fail(baseline, capsys):
     plugin = FastAPISafeguard(checks=[WildcardPathCheck()], baseline_path=str(baseline))
-    app = FastAPI(lifespan=plugin.lifespan())
+    app = FastAPI(lifespan=plugin.get_lifespan())
 
     @app.get("/files/{path:path}")
     async def files(path: str):
@@ -218,7 +218,7 @@ async def test_sensitive_field_and_query_fail(baseline, capsys):
         password: str
 
     plugin = FastAPISafeguard(checks=[SensitiveFieldExposureCheck(), SensitiveQueryParamCheck()], baseline_path=str(baseline))
-    app = FastAPI(lifespan=plugin.lifespan())
+    app = FastAPI(lifespan=plugin.get_lifespan())
 
     @app.get("/account", response_model=User)
     async def account(password_token: str):
@@ -233,7 +233,7 @@ async def test_sensitive_field_and_query_fail(baseline, capsys):
 @pytest.mark.asyncio
 async def test_sensitive_query_allowlist(baseline, capsys):
     plugin = FastAPISafeguard(checks=[SensitiveQueryParamCheck(allowlist=["password_token"])], baseline_path=str(baseline))
-    app = FastAPI(lifespan=plugin.lifespan())
+    app = FastAPI(lifespan=plugin.get_lifespan())
 
     @app.get("/account")
     async def account(password_token: str):
@@ -246,7 +246,7 @@ async def test_sensitive_query_allowlist(baseline, capsys):
 async def test_cors_misconfiguration_fail(baseline, capsys):
     # Use manual user_middleware injection for deterministic detection across Starlette versions
     plugin = FastAPISafeguard(checks=[CORSMisconfigurationCheck()], baseline_path=str(baseline))
-    app = FastAPI(lifespan=plugin.lifespan())
+    app = FastAPI(lifespan=plugin.get_lifespan())
     app.user_middleware.append(types.SimpleNamespace(cls=CORSMiddleware, options={
         'allow_origins': ['*'], 'allow_methods': ['*'], 'allow_headers': ['*'], 'allow_credentials': True
     }))
@@ -262,7 +262,7 @@ async def test_cors_misconfiguration_fail(baseline, capsys):
 @pytest.mark.asyncio
 async def test_cors_ok(baseline, capsys):
     plugin = FastAPISafeguard(checks=[CORSMisconfigurationCheck()], baseline_path=str(baseline))
-    app = FastAPI(lifespan=plugin.lifespan())
+    app = FastAPI(lifespan=plugin.get_lifespan())
     app.add_middleware(CORSMiddleware, allow_origins=["https://example.com"], allow_methods=["GET"], allow_headers=["X-Req"], allow_credentials=False)
 
     @app.get("/ok")
@@ -275,7 +275,7 @@ async def test_cors_ok(baseline, capsys):
 @pytest.mark.asyncio
 async def test_https_trustedhost_ratelimit_fail(baseline, capsys):
     plugin = FastAPISafeguard(checks=[HTTPSRedirectMiddlewareCheck(), TrustedHostMiddlewareCheck(), RateLimitingPresenceCheck()], baseline_path=str(baseline))
-    app = FastAPI(lifespan=plugin.lifespan())
+    app = FastAPI(lifespan=plugin.get_lifespan())
 
     @app.get("/x")
     async def x():
@@ -297,7 +297,7 @@ async def test_https_trustedhost_ratelimit_pass(baseline, capsys):
             self.app = app
 
     plugin = FastAPISafeguard(checks=[HTTPSRedirectMiddlewareCheck(), TrustedHostMiddlewareCheck(), RateLimitingPresenceCheck()], baseline_path=str(baseline))
-    app = FastAPI(lifespan=plugin.lifespan())
+    app = FastAPI(lifespan=plugin.get_lifespan())
     # deterministic manual injection
     app.user_middleware.append(types.SimpleNamespace(cls=HTTPSRedirectMiddleware, options={}))
     app.user_middleware.append(types.SimpleNamespace(cls=TrustedHostMiddleware, options={'allowed_hosts': ['*']}))
@@ -316,7 +316,7 @@ async def test_https_trustedhost_ratelimit_pass(baseline, capsys):
 @pytest.mark.asyncio
 async def test_debug_mode_check_fail(baseline, capsys):
     plugin = FastAPISafeguard(checks=[DebugModeCheck()], baseline_path=str(baseline))
-    app = FastAPI(lifespan=plugin.lifespan())
+    app = FastAPI(lifespan=plugin.get_lifespan())
     app.debug = True  # force debug flag
 
     @app.get("/d")
@@ -331,7 +331,7 @@ async def test_debug_mode_check_fail(baseline, capsys):
 async def test_baseline_resolved_and_prune(baseline, capsys):
     # Start by accepting a finding
     plugin_a = FastAPISafeguard(checks=[DependencySecurityCheck()], baseline_path=str(baseline), update_baseline=True)
-    app_a = FastAPI(lifespan=plugin_a.lifespan())
+    app_a = FastAPI(lifespan=plugin_a.get_lifespan())
 
     @app_a.get("/missing")
     async def missing():
@@ -341,7 +341,7 @@ async def test_baseline_resolved_and_prune(baseline, capsys):
 
     # Now secure route -> finding resolved
     plugin_b = FastAPISafeguard(checks=[DependencySecurityCheck(extra_dependencies={AllowedDep})], baseline_path=str(baseline))
-    app_b = FastAPI(lifespan=plugin_b.lifespan())
+    app_b = FastAPI(lifespan=plugin_b.get_lifespan())
     dep_instance = AllowedDep()
 
     @app_b.get("/missing")
@@ -354,7 +354,7 @@ async def test_baseline_resolved_and_prune(baseline, capsys):
 
     # Prune baseline
     plugin_c = FastAPISafeguard(checks=[DependencySecurityCheck(extra_dependencies={AllowedDep})], baseline_path=str(baseline), update_baseline=True)
-    app_c = FastAPI(lifespan=plugin_c.lifespan())
+    app_c = FastAPI(lifespan=plugin_c.get_lifespan())
 
     @app_c.get("/missing")
     async def missing_ok2(dep: bool = Depends(dep_instance)):
@@ -398,7 +398,7 @@ async def test_run_checks_with_custom_lifespan(baseline, capsys):
 async def test_invalid_baseline_parsing(baseline, capsys):
     baseline.write_text("{ invalid json")
     plugin = FastAPISafeguard(checks=[DependencySecurityCheck()], baseline_path=str(baseline))
-    app = FastAPI(lifespan=plugin.lifespan())
+    app = FastAPI(lifespan=plugin.get_lifespan())
 
     @app.get("/a")
     async def a():
@@ -411,7 +411,7 @@ async def test_invalid_baseline_parsing(baseline, capsys):
 @pytest.mark.asyncio
 async def test_category_summary_and_owasp_codes(baseline, capsys):
     plugin = FastAPISafeguard(checks=[DependencySecurityCheck(), PaginationEnforcementCheck()], baseline_path=str(baseline))
-    app = FastAPI(lifespan=plugin.lifespan())
+    app = FastAPI(lifespan=plugin.get_lifespan())
 
     @app.get("/list")
     async def list_items() -> list[int]:
@@ -431,7 +431,7 @@ async def test_category_summary_and_owasp_codes(baseline, capsys):
 @pytest.mark.asyncio
 async def test_disable_security_checks_skips_all(baseline, capsys):
     plugin = FastAPISafeguard(checks=[DependencySecurityCheck(), ResponseModelSecurityCheck(), PaginationEnforcementCheck()], baseline_path=str(baseline))
-    app = FastAPI(lifespan=plugin.lifespan())
+    app = FastAPI(lifespan=plugin.get_lifespan())
 
     @disable_security_checks
     @app.post("/insecure")
@@ -449,7 +449,7 @@ async def test_unsecured_allowed_methods_fail(baseline, capsys):
         checks=[UnsecuredAllowedMethodsCheck(allowed_unsecured=["/openapi.json", "/docs", "/redoc", "/unsecured"])],
         baseline_path=str(baseline),
     )
-    app = FastAPI(lifespan=plugin.lifespan())
+    app = FastAPI(lifespan=plugin.get_lifespan())
 
     @app.post("/unsecured")
     async def unsecured():
@@ -465,7 +465,7 @@ async def test_unsecured_allowed_methods_pass(baseline, capsys):
         checks=[UnsecuredAllowedMethodsCheck(allowed_unsecured=["/unsecured"])],
         baseline_path=str(baseline),
     )
-    app = FastAPI(lifespan=plugin.lifespan())
+    app = FastAPI(lifespan=plugin.get_lifespan())
 
     @app.get("/unsecured")
     async def unsecured():
@@ -480,7 +480,7 @@ async def test_allowed_unsecured_skips_response_model_check(baseline, capsys):
         checks=[ResponseModelSecurityCheck(enforce_methods=["POST"], allowed_unsecured=["/skipresp"])],
         baseline_path=str(baseline),
     )
-    app = FastAPI(lifespan=plugin.lifespan())
+    app = FastAPI(lifespan=plugin.get_lifespan())
 
     @app.post("/skipresp")
     async def skipresp():
@@ -495,7 +495,7 @@ async def test_open_route_still_enforces_other_checks(baseline, capsys):
         checks=[ResponseModelSecurityCheck(enforce_methods=["POST"]), DependencySecurityCheck()],
         baseline_path=str(baseline),
     )
-    app = FastAPI(lifespan=plugin.lifespan())
+    app = FastAPI(lifespan=plugin.get_lifespan())
 
     @open_route
     @app.post("/openmissing")
@@ -515,7 +515,7 @@ async def test_disable_security_checks_multi(baseline, capsys):
         checks=[DependencySecurityCheck(), ResponseModelSecurityCheck(), BodyModelEnforcementCheck()],
         baseline_path=str(baseline),
     )
-    app = FastAPI(lifespan=plugin.lifespan())
+    app = FastAPI(lifespan=plugin.get_lifespan())
 
     @disable_security_checks
     @app.post("/multi")
@@ -529,7 +529,7 @@ async def test_disable_security_checks_multi(baseline, capsys):
 @pytest.mark.asyncio
 async def test_cors_no_middleware_no_findings(baseline, capsys):
     plugin = FastAPISafeguard(checks=[CORSMisconfigurationCheck()], baseline_path=str(baseline))
-    app = FastAPI(lifespan=plugin.lifespan())
+    app = FastAPI(lifespan=plugin.get_lifespan())
 
     @app.get("/plain")
     async def plain():

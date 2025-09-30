@@ -273,7 +273,7 @@ def test_baseline_refresh_removing_resolved(tmp_path, capsys):
     check.allowed_unsecured.add("/b")
 
     from fastapi.routing import APIRoute
-    app = FastAPI(lifespan=plugin.lifespan())
+    app = FastAPI(lifespan=plugin.get_lifespan())
 
     async def _ep():
         return None
