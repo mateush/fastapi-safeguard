@@ -14,9 +14,9 @@ Example:
     >>> from fastapi import FastAPI
     >>> from fastapi_safeguard import FastAPISafeguard
     >>>
-    >>> app = FastAPI(lifespan=FastAPISafeguard.recommended().get_lifespan())
+    >>> app = FastAPI(lifespan=FastAPISafeguard.recommended().lifespan())
 
-For more information, see the documentation at https://github.com/yourusername/fastapi-safeguard
+For more information, see the documentation at https://github.com/mateush/fastapi-safeguard
 """
 from __future__ import annotations
 
@@ -95,7 +95,24 @@ RATE_LIMIT_KEYWORDS = ["ratelimit", "throttle"]
 
 
 def _route_dependencies(route: APIRoute) -> List[Callable]:
-    return [dep.call for dep in route.dependant.dependencies]
+    """Collect dependency callables for a route, including nested sub-dependencies.
+
+    Walks the full dependant tree so a security scheme wrapped inside a custom
+    dependency (e.g. ``Depends(get_current_user)`` where ``get_current_user``
+    itself depends on ``OAuth2PasswordBearer``) is still discovered.
+    """
+    collected: List[Callable] = []
+    seen: Set[int] = set()
+    stack = list(route.dependant.dependencies)
+    while stack:
+        dependant = stack.pop()
+        if id(dependant) in seen:
+            continue
+        seen.add(id(dependant))
+        if dependant.call is not None:
+            collected.append(dependant.call)
+        stack.extend(dependant.dependencies)
+    return collected
 
 
 # --------------------------------------------------------------------------------------
@@ -373,7 +390,11 @@ class PaginationEnforcementCheck(RouteCheck):
     def _analyze(self, route: APIRoute) -> Optional[str]:
         if "GET" not in route.methods:
             return None
+        # Prefer the return annotation; fall back to response_model so routes
+        # declared via response_model=List[X] without an annotation are covered.
         ann = route.endpoint.__annotations__.get("return")
+        if ann is None:
+            ann = route.response_model
         if ann is None:
             return None
         origin = get_origin(ann)
@@ -669,7 +690,9 @@ class FastAPISafeguard:
         cwd = os.getcwd()
         # Ensure the path is within the current working directory or is absolute
         # This prevents malicious paths like "../../etc/passwd"
-        if not abs_path.startswith(cwd):
+        # (cwd + os.sep avoids false prefix matches like /foo vs /foobar)
+        inside_cwd = abs_path == cwd or abs_path.startswith(cwd + os.sep)
+        if not inside_cwd:
             # Allow absolute paths outside cwd only if explicitly provided
             if not os.path.isabs(path):
                 raise ValueError(
@@ -842,11 +865,11 @@ class FastAPISafeguard:
             else:
                 print(f"✅ All security checks passed (0 findings, {route_count} routes, {len(self.checks)} checks).")
 
-    def get_lifespan(self):
+    def lifespan(self):
         """Return an async context manager for FastAPI lifespan integration.
 
         Usage:
-            app = FastAPI(lifespan=safeguard.get_lifespan())
+            app = FastAPI(lifespan=safeguard.lifespan())
 
         Returns:
             An async context manager that runs security checks on startup.
@@ -857,6 +880,10 @@ class FastAPISafeguard:
             yield
 
         return _lifespan
+
+    def get_lifespan(self):
+        """Deprecated alias for lifespan()."""
+        return self.lifespan()
 
 
 # --------------------------------------------------------------------------------------
@@ -869,6 +896,7 @@ __all__ = [
     # Core types
     "FastAPISafeguard",
     "SecurityCheck",
+    "RouteCheck",
     # Checks
     "DependencySecurityCheck",
     "ResponseModelSecurityCheck",

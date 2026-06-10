@@ -111,7 +111,7 @@ The baseline is the key part. Once you accept a finding, it's pinned. Future run
 
 ### Custom auth dependencies
 
-If your app uses custom auth (not FastAPI's built-in `OAuth2`, `HTTPBasic`, or `APIKey*`), register your dependencies so the auth check recognizes them:
+Built-in schemes (`OAuth2*`, `HTTPBasic`, `HTTPBearer`, `APIKey*`) are recognized even when nested inside your own dependencies — the common `Depends(get_current_user)` pattern, where `get_current_user` itself depends on `oauth2_scheme`, works out of the box. Only fully custom auth needs registering so the check recognizes it:
 
 ```python
 from fastapi_safeguard import (
@@ -294,15 +294,17 @@ These have higher false positive rates or are typically handled at the infrastru
 ## Writing a Custom Check
 
 ```python
+from typing import Optional
+
 from fastapi.routing import APIRoute
-from fastapi_safeguard import RouteCheck
+from fastapi_safeguard import FastAPISafeguard, RouteCheck
 
 class MaxPathDepthCheck(RouteCheck):
     """Flag routes with deeply nested paths (more than 4 segments)."""
     CATEGORY = "routing"
     OWASP = ["API5"]
 
-    def check_route(self, route: APIRoute) -> str | None:
+    def _analyze(self, route: APIRoute) -> Optional[str]:
         depth = len(route.path.strip("/").split("/"))
         if depth > 4:
             return f"{route.path} has {depth} path segments (max 4)"
@@ -315,7 +317,7 @@ safeguard = FastAPISafeguard(checks=[
 ```
 
 Rules:
-- Subclass `RouteCheck` (not `SecurityCheck`) to inherit `@open_route` and `@disable_security_checks` support.
+- Subclass `RouteCheck` (not `SecurityCheck`) and implement `_analyze` — the base class handles `@disable_security_checks` and `allowed_unsecured` paths for you.
 - Return `None` when compliant, a string when not.
 - Finding strings must be **stable and deterministic** — the baseline matches on exact text.
 - Set `CATEGORY` and `OWASP` for the summary output.

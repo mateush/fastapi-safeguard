@@ -37,8 +37,9 @@ class FakeParam:
         self.type_ = type_
 
 class FakeDep:
-    def __init__(self, call):
+    def __init__(self, call, dependencies=None):
         self.call = call
+        self.dependencies = dependencies or []
 
 class FakeDependant:
     def __init__(self, dependencies=None, body_params=None, query_params=None):

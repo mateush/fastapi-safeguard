@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fastapi-safeguard"
-version = "0.1.0"
+version = "0.1.1"
 description = "Startup-time security posture and baseline management plugin for FastAPI applications."
 readme = "README.md"
 license = {file = "LICENSE"}

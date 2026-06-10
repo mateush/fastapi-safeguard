@@ -4,8 +4,11 @@ import types
 from pathlib import Path
 from contextlib import asynccontextmanager
 
+from typing import List
+
 import pytest
 from fastapi import FastAPI, Depends, Body
+from fastapi.security import OAuth2PasswordBearer
 from pydantic import BaseModel
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
@@ -102,6 +105,37 @@ async def test_dependency_check_pass_with_dependency(baseline, capsys):
     assert "no accepted security dependency" not in out
 
 @pytest.mark.asyncio
+async def test_dependency_check_recognizes_nested_security_scheme(baseline, capsys):
+    """A built-in scheme nested inside a custom dependency must be detected."""
+    oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+    async def get_current_user(token: str = Depends(oauth2_scheme)):
+        return {"user": token}
+
+    plugin = FastAPISafeguard(checks=[DependencySecurityCheck()], baseline_path=str(baseline))
+    app = FastAPI(lifespan=plugin.lifespan())
+
+    @app.get("/me")
+    async def me(user: dict = Depends(get_current_user)):
+        return user
+
+    await run_startup(app)
+    assert "no accepted security dependency" not in capsys.readouterr().out
+
+@pytest.mark.asyncio
+async def test_get_lifespan_alias(baseline, capsys):
+    plugin = FastAPISafeguard(checks=[DependencySecurityCheck()], baseline_path=str(baseline))
+    app = FastAPI(lifespan=plugin.get_lifespan())
+
+    @open_route
+    @app.get("/public")
+    async def public():
+        return {"ok": True}
+
+    await run_startup(app)
+    assert "✅" in capsys.readouterr().out
+
+@pytest.mark.asyncio
 async def test_open_route_and_disable_security(baseline, capsys):
     plugin = FastAPISafeguard(checks=[DependencySecurityCheck()], baseline_path=str(baseline))
     app = FastAPI(lifespan=plugin.get_lifespan())
@@ -180,6 +214,20 @@ async def test_pagination_enforcement_fail(baseline, capsys):
 
     @app.get("/items")
     async def items() -> list[int]:
+        return [1, 2]
+
+    with pytest.raises(SystemExit):
+        await run_startup(app)
+    assert "returns a collection without pagination params" in capsys.readouterr().out
+
+@pytest.mark.asyncio
+async def test_pagination_enforcement_fail_via_response_model(baseline, capsys):
+    """response_model=List[X] without a return annotation must also be flagged."""
+    plugin = FastAPISafeguard(checks=[PaginationEnforcementCheck()], baseline_path=str(baseline))
+    app = FastAPI(lifespan=plugin.lifespan())
+
+    @app.get("/items", response_model=List[int])
+    async def items():
         return [1, 2]
 
     with pytest.raises(SystemExit):
