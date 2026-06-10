@@ -355,3 +355,118 @@ def test_recommended_checks_function_equivalence():
     a = recommended_checks()
     b = FastAPISafeguard.recommended().checks
     assert {type(c).__name__ for c in a} == {type(c).__name__ for c in b}
+
+
+# ------------------ Edge-case coverage ------------------
+
+def test_route_dependencies_dedup_and_none_call():
+    def dep():
+        pass
+    shared = FakeDep(dep)
+    nested_without_call = FakeDep(None, dependencies=[shared])
+    route = FakeRoute(dependant=FakeDependant(dependencies=[shared, nested_without_call]))
+    check = DependencySecurityCheck(extra_dependencies=[dep])
+    assert check.check_route(route) is None
+
+
+def test_response_model_present_passes():
+    route = FakeRoute(methods={"POST"}, response_model=SimpleModel)
+    assert ResponseModelSecurityCheck().check_route(route) is None
+
+
+def test_unsecured_allowed_methods_ignores_other_paths():
+    check = UnsecuredAllowedMethodsCheck(allowed_unsecured=["/open"])
+    route = FakeRoute(path="/elsewhere", methods={"POST"})
+    assert check.check_route(route) is None
+    assert check._analyze(route) is None  # stub kept for the RouteCheck contract
+
+
+def test_cors_allow_wildcards_still_flags_credentials():
+    check = CORSMisconfigurationCheck(allow_wildcards=True)
+    app = FastAPI()
+    app.user_middleware.append(types.SimpleNamespace(cls=CORSMiddleware, options={
+        "allow_origins": ["*"], "allow_credentials": True,
+    }))
+    assert check.app_check(app) == "CORS misconfiguration: credentials allowed with wildcard origins"
+
+
+def test_cors_skips_unrelated_middleware():
+    check = CORSMisconfigurationCheck()
+    app = FastAPI()
+    app.user_middleware.append(types.SimpleNamespace(cls=HTTPSRedirectMiddleware, options={}))
+    assert check.app_check(app) is None
+
+
+def test_single_run_checks_noop_on_second_call():
+    app = FastAPI()
+    app.debug = True
+    check = DebugModeCheck()
+    assert check.app_check(app) == "Application running in debug mode"
+    assert check.app_check(app) is None
+
+
+def test_infra_checks_single_run():
+    app = FastAPI()
+    for check in (HTTPSRedirectMiddlewareCheck(), TrustedHostMiddlewareCheck(), RateLimitingPresenceCheck()):
+        assert check.app_check(app) is not None
+        assert check.app_check(app) is None
+
+
+def test_body_model_skips_upload_file():
+    from fastapi import UploadFile
+    route = FakeRoute(
+        methods={"POST"},
+        dependant=FakeDependant(body_params=[FakeParam("file", UploadFile)]),
+    )
+    assert BodyModelEnforcementCheck().check_route(route) is None
+
+
+def test_pagination_unorderable_annotation_guard():
+    class Weird:
+        __hash__ = object.__hash__
+        def __eq__(self, other):
+            raise TypeError("unorderable")
+
+    def endpoint():
+        pass
+    endpoint.__annotations__ = {"return": Weird()}
+    route = FakeRoute(methods={"GET"}, endpoint=endpoint)
+    assert PaginationEnforcementCheck().check_route(route) is None
+
+
+def test_sensitive_query_ignores_benign_params():
+    route = FakeRoute(dependant=FakeDependant(query_params=[FakeParam("page", int)]))
+    assert SensitiveQueryParamCheck().check_route(route) is None
+
+
+def test_unsecured_allowed_methods_respects_skip_all():
+    from fastapi_safeguard import disable_security_checks
+
+    @disable_security_checks
+    def endpoint():
+        pass
+    check = UnsecuredAllowedMethodsCheck(allowed_unsecured=["/hook"])
+    route = FakeRoute(path="/hook", methods={"POST"}, endpoint=endpoint)
+    assert check.check_route(route) is None
+
+
+def test_pagination_skips_non_get():
+    route = FakeRoute(methods={"POST"})
+    assert PaginationEnforcementCheck().check_route(route) is None
+
+
+def test_https_redirect_ignores_unrelated_middleware():
+    check = HTTPSRedirectMiddlewareCheck()
+    app = _make_app_with_middleware([types.SimpleNamespace(cls=CORSMiddleware, options={})])
+    assert check.app_check(app) is not None
+
+
+def test_admin_route_with_dependencies_passes():
+    def dep():
+        pass
+    route = FakeRoute(path="/admin/users", dependant=FakeDependant(dependencies=[FakeDep(dep)]))
+    assert AdminRouteOpenCheck().check_route(route) is None
+
+
+def test_admin_check_ignores_non_admin_paths():
+    assert AdminRouteOpenCheck().check_route(FakeRoute(path="/plain")) is None

@@ -1,37 +1,14 @@
-"""FastAPI Safeguard - Security auditing framework for FastAPI applications.
+"""Security checks and the decorators that scope them.
 
-This module provides a comprehensive security checking system for FastAPI applications,
-detecting common vulnerabilities aligned with OWASP API Security Top 10.
-
-The framework includes:
-- Authentication and authorization enforcement
-- Data exposure prevention
-- Resource consumption protection
-- Security misconfiguration detection
-- Baseline management for accepted findings
-
-Example:
-    >>> from fastapi import FastAPI
-    >>> from fastapi_safeguard import FastAPISafeguard
-    >>>
-    >>> app = FastAPI(lifespan=FastAPISafeguard.recommended().lifespan())
-
-For more information, see the documentation at https://github.com/mateush/fastapi-safeguard
+Every check is a small, single-purpose class implementing the `SecurityCheck`
+contract: inspect one route (or, via ``app_check``, the whole application) and
+return ``None`` when compliant or a stable, deterministic finding string when
+not. Baselines match on the exact finding text, so wording must never depend
+on runtime state such as timestamps or ordering.
 """
 from __future__ import annotations
 
-from fastapi import FastAPI, UploadFile
-from fastapi.routing import APIRoute
-from fastapi.security import (
-    OAuth2PasswordBearer,
-    OAuth2PasswordRequestForm,
-    HTTPBasic,
-    HTTPBearer,
-    APIKeyHeader,
-    APIKeyQuery,
-    APIKeyCookie,
-)
-from contextlib import asynccontextmanager
+from abc import ABC, abstractmethod
 from typing import (
     Any,
     Callable,
@@ -43,13 +20,19 @@ from typing import (
     Type,
     Union,
     get_origin,
-    Dict,
 )
-import sys
-import os
-import json
-from abc import ABC, abstractmethod
-from datetime import datetime, timezone
+
+from fastapi import FastAPI, UploadFile
+from fastapi.routing import APIRoute
+from fastapi.security import (
+    APIKeyCookie,
+    APIKeyHeader,
+    APIKeyQuery,
+    HTTPBasic,
+    HTTPBearer,
+    OAuth2PasswordBearer,
+    OAuth2PasswordRequestForm,
+)
 from pydantic import BaseModel
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
@@ -85,13 +68,13 @@ def _skip_all(route: APIRoute) -> bool:
 # --------------------------------------------------------------------------------------
 # Shared constants & helpers
 # --------------------------------------------------------------------------------------
-DEFAULT_ALLOWED_UNSECURED: Set[str] = {"/openapi.json", "/docs", "/redoc"}
-SUSPICIOUS_FIELD_PARTS = [
+DEFAULT_ALLOWED_UNSECURED: frozenset = frozenset({"/openapi.json", "/docs", "/redoc"})
+SUSPICIOUS_FIELD_PARTS: frozenset = frozenset({
     "password", "passwd", "secret", "token", "api_key", "apikey",
     "key", "credential", "auth", "private",
-]
+})
 SUSPICIOUS_QUERY_PARTS = SUSPICIOUS_FIELD_PARTS  # reuse same list
-RATE_LIMIT_KEYWORDS = ["ratelimit", "throttle"]
+RATE_LIMIT_KEYWORDS = ("ratelimit", "throttle")
 
 
 def _route_dependencies(route: APIRoute) -> List[Callable]:
@@ -431,7 +414,7 @@ class SensitiveFieldExposureCheck(RouteCheck):
         try:
             if not issubclass(model, BaseModel):  # type: ignore[arg-type]
                 return None
-        except TypeError:
+        except TypeError:  # pragma: no cover - defensive against exotic metaclasses
             return None
         field_names = (
             list(getattr(model, "model_fields", {}).keys())
@@ -596,6 +579,7 @@ class AdminRouteOpenCheck(RouteCheck):
                 return f"{','.join(route.methods)} {route.path} admin route without explicit security dependencies"
         return None
 
+
 # ---------------- Recommended preset utilities ----------------
 
 def recommended_checks(
@@ -611,10 +595,9 @@ def recommended_checks(
     - Sensitive data exposure detection
     - CORS & debug mode misconfiguration
 
-    include_heuristics controls inclusion of softer / more subjective rules:
-    - Infrastructure-level checks (HTTPS redirect, trusted host, rate limiting)
-    - Heuristic-based checks (dangerous methods, SSRF params, admin routes, wildcard paths)
-    - Type annotation enforcement
+    Optional checks (infrastructure-level or heuristic-based rules such as
+    HTTPS redirect, rate limiting, SSRF params, admin routes) are not included;
+    add them explicitly when relevant to your deployment.
     """
     allowed_unsecured = allowed_unsecured or DEFAULT_ALLOWED_UNSECURED
 
@@ -638,283 +621,3 @@ def recommended_checks(
         DebugModeCheck(),
     ]
     return core
-
-
-# --------------------------------------------------------------------------------------
-# Baseline (lock file) orchestration plugin
-# --------------------------------------------------------------------------------------
-class FastAPISafeguard:
-    """Run registered security checks and manage a baseline (accepted findings) file.
-
-    Baseline logic:
-      * If baseline exists, findings listed there are accepted.
-      * Startup fails only on NEW findings unless update_baseline / SECURITY_BASELINE_UPDATE=1.
-      * With update flag, current findings overwrite the baseline.
-      * Resolved (previously accepted but now gone) findings can be pruned with update.
-
-    Added: grouped category summary of findings (total/new/accepted per category).
-    """
-
-    def __init__(
-        self,
-        checks: Optional[List[SecurityCheck]] = None,
-        baseline_path: Optional[str] = None,
-        update_baseline: Optional[bool] = None,
-    ) -> None:
-        self.checks: List[SecurityCheck] = checks or [DependencySecurityCheck()]
-        raw_path = (
-            baseline_path
-            or os.environ.get("SECURITY_BASELINE_PATH")
-            or "security_baseline.json"
-        )
-        # Validate baseline path to prevent path traversal attacks
-        self.baseline_path = self._validate_baseline_path(raw_path)
-        if update_baseline is None:
-            self.update_baseline = os.environ.get("SECURITY_BASELINE_UPDATE") == "1"
-        else:
-            self.update_baseline = update_baseline
-
-    def _validate_baseline_path(self, path: str) -> str:
-        """Validate and normalize baseline file path for security.
-
-        Args:
-            path: Raw path from user input or environment.
-
-        Returns:
-            Validated absolute path.
-
-        Raises:
-            ValueError: If path attempts traversal outside working directory.
-        """
-        abs_path = os.path.abspath(path)
-        cwd = os.getcwd()
-        # Ensure the path is within the current working directory or is absolute
-        # This prevents malicious paths like "../../etc/passwd"
-        # (cwd + os.sep avoids false prefix matches like /foo vs /foobar)
-        inside_cwd = abs_path == cwd or abs_path.startswith(cwd + os.sep)
-        if not inside_cwd:
-            # Allow absolute paths outside cwd only if explicitly provided
-            if not os.path.isabs(path):
-                raise ValueError(
-                    f"Baseline path '{path}' resolves outside working directory. "
-                    f"Use absolute path if intentional."
-                )
-        return abs_path
-
-    @classmethod
-    def recommended(
-        cls,
-        *,
-        allowed_unsecured: Optional[Sequence[str]] = None,
-        extra_dependencies: Optional[Union[List[Any], Set[Any]]] = None,
-        baseline_path: Optional[str] = None,
-        update_baseline: Optional[bool] = None,
-    ) -> "FastAPISafeguard":
-        """Instantiate plugin with the recommended preset of checks.
-        """
-        checks = recommended_checks(
-            allowed_unsecured=allowed_unsecured,
-            extra_dependencies=extra_dependencies,
-        )
-        return cls(
-            checks=checks,
-            baseline_path=baseline_path,
-            update_baseline=update_baseline,
-        )
-
-    # -------- Baseline helpers --------
-    def _load_baseline(self) -> Set[str]:
-        if not (self.baseline_path and os.path.exists(self.baseline_path)):
-            return set()
-        try:
-            with open(self.baseline_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            accepted = data.get("accepted_findings")
-            if isinstance(accepted, list):
-                return set(accepted)
-        except (OSError, json.JSONDecodeError, ValueError, KeyError) as exc:  # pragma: no cover - defensive
-            print(f"⚠️  Could not parse baseline file '{self.baseline_path}': {exc}")
-        return set()
-
-    def _write_baseline(self, findings: Sequence[str]) -> None:
-        if not self.baseline_path:
-            return
-        payload = {
-            "schema_version": 1,
-            "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            "accepted_findings": sorted(set(findings)),
-            "checks_count": len(self.checks),
-        }
-        try:
-            with open(self.baseline_path, "w", encoding="utf-8") as f:
-                json.dump(payload, f, indent=2)
-            # Set secure permissions: owner read/write only
-            try:
-                os.chmod(self.baseline_path, 0o600)
-            except OSError:
-                pass  # Best effort; may fail on Windows or restricted environments
-            print(f"💾 Updated security baseline written to {self.baseline_path}")
-        except (OSError, TypeError, ValueError) as exc:  # pragma: no cover - defensive
-            print(f"⚠️  Failed to write baseline file '{self.baseline_path}': {exc}")
-
-    # -------- Summary helpers --------
-    def _print_category_summary(
-        self,
-        category_map: Dict[str, List[str]],
-        new_findings: Set[str],
-        category_owasp: Dict[str, Set[str]],
-    ) -> None:
-        if not category_map:
-            print("ℹ️  No findings to summarize by category.")
-            return
-        print("\nCategory Summary:")
-        header = f"{'Category':<15} {'Total':>5} {'New':>5} {'Accepted':>9}  {'OWASP':<25}"
-        print(header)
-        print("-" * len(header))
-        for cat in sorted(category_map.keys()):
-            findings = category_map[cat]
-            total = len(findings)
-            new_cnt = sum(1 for f in findings if f in new_findings)
-            accepted_cnt = total - new_cnt
-            owasp_list = sorted(category_owasp.get(cat, []))
-            owasp_str = "/".join(owasp_list)[:25]
-            print(f"{cat:<15} {total:>5} {new_cnt:>5} {accepted_cnt:>9}  {owasp_str:<25}")
-        print()
-
-    # -------- Lifespan --------
-    def run_checks(self, app: FastAPI) -> None:
-        """Run all security checks on the FastAPI app and exit on failures.
-
-        This method can be called from within a custom lifespan context manager
-        for apps that already have their own lifespan logic.
-
-        Args:
-            app: The FastAPI application instance to check.
-
-        Raises:
-            SystemExit: If new security findings are detected and not in baseline.
-        """
-        findings: List[str] = []
-        category_map: Dict[str, List[str]] = {}
-        category_owasp: Dict[str, Set[str]] = {}
-        # App-level checks
-        for check in self.checks:
-            app_check_fn = getattr(check, "app_check", None)
-            if callable(app_check_fn):
-                res = app_check_fn(app)
-                if res:
-                    findings.append(res)
-                    cat = getattr(check, 'CATEGORY', 'general')
-                    category_map.setdefault(cat, []).append(res)
-                    for code in getattr(check, 'OWASP', []):
-                        category_owasp.setdefault(cat, set()).add(code)
-        route_count = 0
-        for route in app.routes:
-            if isinstance(route, APIRoute):
-                route_count += 1
-                for check in self.checks:
-                    res = check.check_route(route)
-                    if res:
-                        findings.append(res)
-                        cat = getattr(check, 'CATEGORY', 'general')
-                        category_map.setdefault(cat, []).append(res)
-                        for code in getattr(check, 'OWASP', []):
-                            category_owasp.setdefault(cat, set()).add(code)
-
-        baseline = self._load_baseline()
-        current = set(findings)
-        new = current - baseline
-        resolved = baseline - current if baseline else set()
-
-        # Always print summary (it reflects current findings regardless of baseline state)
-        if findings:
-            self._print_category_summary(category_map, new, category_owasp)
-
-        if findings:
-            if new:
-                if self.update_baseline:
-                    self._write_baseline(findings)
-                    print("✅ Security checks passed with new findings accepted into baseline.")
-                else:
-                    print("❌ Security check failed: new findings detected (not in baseline):")
-                    for f in sorted(new):
-                        print(f"  + {f}")
-                    if baseline:
-                        accepted_only = current & baseline
-                        if accepted_only:
-                            print("ℹ️  Previously accepted findings (baseline):")
-                            for f in sorted(accepted_only):
-                                print(f"    = {f}")
-                    print("\nTo accept current findings run with SECURITY_BASELINE_UPDATE=1 or set update_baseline=True.")
-                    sys.exit(1)
-            else:
-                if self.update_baseline and resolved:
-                    self._write_baseline(findings)
-                    print("✅ All security findings match baseline (baseline refreshed removing resolved items).")
-                else:
-                    print(f"✅ All security findings match accepted baseline ({len(findings)} accepted).")
-                    if resolved:
-                        print(f"ℹ️  {len(resolved)} previously accepted finding(s) resolved; run with SECURITY_BASELINE_UPDATE=1 to prune baseline.")
-        else:
-            if baseline:
-                if self.update_baseline:
-                    self._write_baseline([])
-                    print("✅ No security findings. Baseline cleared (was non-empty).")
-                else:
-                    print("✅ No security findings. (Baseline exists – run with SECURITY_BASELINE_UPDATE=1 to clear.)")
-            else:
-                print(f"✅ All security checks passed (0 findings, {route_count} routes, {len(self.checks)} checks).")
-
-    def lifespan(self):
-        """Return an async context manager for FastAPI lifespan integration.
-
-        Usage:
-            app = FastAPI(lifespan=safeguard.lifespan())
-
-        Returns:
-            An async context manager that runs security checks on startup.
-        """
-        @asynccontextmanager
-        async def _lifespan(app: FastAPI):
-            self.run_checks(app)
-            yield
-
-        return _lifespan
-
-    def get_lifespan(self):
-        """Deprecated alias for lifespan()."""
-        return self.lifespan()
-
-
-# --------------------------------------------------------------------------------------
-# Public exports
-# --------------------------------------------------------------------------------------
-__all__ = [
-    # Decorators
-    "open_route",
-    "disable_security_checks",
-    # Core types
-    "FastAPISafeguard",
-    "SecurityCheck",
-    "RouteCheck",
-    # Checks
-    "DependencySecurityCheck",
-    "ResponseModelSecurityCheck",
-    "UnsecuredAllowedMethodsCheck",
-    "CORSMisconfigurationCheck",
-    "DebugModeCheck",
-    "BodyModelEnforcementCheck",
-    "PaginationEnforcementCheck",
-    "WildcardPathCheck",
-    "SensitiveFieldExposureCheck",
-    "ReturnTypeAnnotationCheck",
-    "SensitiveQueryParamCheck",
-    "HTTPSRedirectMiddlewareCheck",
-    "TrustedHostMiddlewareCheck",
-    "RateLimitingPresenceCheck",
-    "DangerousMethodExposureCheck",
-    "SSRFParameterCheck",
-    "AdminRouteOpenCheck",
-    # Preset helpers
-    "recommended_checks",
-]

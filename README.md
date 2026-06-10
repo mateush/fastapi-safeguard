@@ -10,6 +10,7 @@ Add it once. New unsecured routes fail the build.
 
 - **Baseline lock file** — Like `package-lock.json`, but for security findings. Accept existing tech debt; fail only on *new* regressions. Every change to security posture shows up as a diff in `security_baseline.json`.
 - **Fail fast** — Startup exits non-zero if new issues are found. Works as a CI gate out of the box.
+- **CLI & test helper** — `fastapi-safeguard check app.main:app` scans without running your app; `assert_safeguard(app)` does the same inside pytest.
 - **Explicit intent** — Mark public endpoints with `@open_route`. Everything else is expected to have auth.
 - **Zero runtime overhead** — Checks run once at startup, never per-request.
 - **Extensible** — 9 core checks, 8 optional, and a simple base class for your own rules.
@@ -76,6 +77,8 @@ uvicorn main:app --reload
 - [Why](#why)
 - [Configuration](#configuration)
 - [Baseline Workflow](#baseline-workflow)
+- [CLI](#cli)
+- [Using in Tests](#using-in-tests)
 - [Decorators](#decorators)
 - [Security Checks Reference](#security-checks-reference)
 - [OWASP API Top 10 Coverage](#owasp-api-top-10-coverage)
@@ -211,6 +214,43 @@ If a diff adds `"GET /internal-metrics has no accepted security dependency"`, as
 
 ---
 
+## CLI
+
+Scan an app without wiring the lifespan or starting a server — the app is only imported, never run. Use it when you want the security gate in CI (or locally) instead of, or in addition to, the startup gate:
+
+```bash
+fastapi-safeguard check app.main:app                  # attribute defaults to :app
+fastapi-safeguard check app.main:create_app --factory # app factories
+fastapi-safeguard check main:app --update-baseline    # accept current findings
+```
+
+| Flag | Purpose |
+|---|---|
+| `--app-dir DIR` | Directory to add to the import path (default: `.`) |
+| `--baseline PATH` | Baseline file (default: `SECURITY_BASELINE_PATH` or `security_baseline.json`) |
+| `--update-baseline` | Accept current findings and write/refresh the baseline |
+| `--factory` | Call the imported attribute to get the app |
+
+Exit codes: `0` pass, `1` new findings, `2` app could not be loaded. Also available as `python -m fastapi_safeguard`.
+
+---
+
+## Using in Tests
+
+`assert_safeguard(app)` runs the same scan as a plain assertion — no `SystemExit`, no stdout noise, baseline respected but never written:
+
+```python
+from fastapi_safeguard import assert_safeguard
+from app.main import app
+
+def test_security_posture():
+    assert_safeguard(app)  # raises AssertionError listing any new findings
+```
+
+It returns a `ScanResult` for further assertions, and accepts `checks=[...]`, `baseline_path=...`, or a preconfigured `safeguard=` for custom setups.
+
+---
+
 ## Decorators
 
 | Decorator | Effect | Other checks still run? | Use case |
@@ -327,11 +367,11 @@ Rules:
 ## CI/CD Integration
 
 ```yaml
-# GitHub Actions — importing the app module triggers lifespan startup and runs all checks
+# GitHub Actions — scans the app without running it; exits 1 on new findings
 - name: Security route check
   run: |
-    pip install fastapi uvicorn
-    python -c "import main"
+    pip install fastapi-safeguard
+    fastapi-safeguard check main:app
 ```
 
 To accept a new baseline in a controlled PR:
@@ -340,7 +380,7 @@ To accept a new baseline in a controlled PR:
 - name: Update baseline (manual trigger)
   if: github.event_name == 'workflow_dispatch'
   run: |
-    SECURITY_BASELINE_UPDATE=1 python -c "import main"
+    fastapi-safeguard check main:app --update-baseline
     git add security_baseline.json
     git commit -m "chore: update security baseline" || echo "No changes"
 ```

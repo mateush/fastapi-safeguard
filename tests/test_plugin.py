@@ -1,7 +1,6 @@
 import json
 import re
 import types
-from pathlib import Path
 from contextlib import asynccontextmanager
 
 from typing import List
@@ -39,21 +38,6 @@ from fastapi_safeguard import (
 async def run_startup(app: FastAPI):
     async with app.router.lifespan_context(app):
         pass
-
-@pytest.fixture(autouse=True)
-def clear_env(tmp_path, monkeypatch):
-    # Ensure no global baseline interferes
-    for k in ["SECURITY_BASELINE_UPDATE", "SECURITY_BASELINE_PATH"]:
-        monkeypatch.delenv(k, raising=False)
-    # Remove default baseline file if created by prior runs
-    default_file = Path("security_baseline.json")
-    if default_file.exists():
-        default_file.unlink()
-
-# Provide a unique baseline path per test
-@pytest.fixture
-def baseline(tmp_path):
-    return tmp_path / "baseline.json"
 
 # Simple accepted dependency class for dependency check
 class AllowedDep:

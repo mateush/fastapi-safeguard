@@ -36,6 +36,21 @@ class DummyDep:
     def __call__(self):
         return True
 
+@pytest.fixture(autouse=True)
+def clear_env(monkeypatch):
+    # Ensure no global baseline configuration interferes
+    for k in ["SECURITY_BASELINE_UPDATE", "SECURITY_BASELINE_PATH"]:
+        monkeypatch.delenv(k, raising=False)
+    # Remove default baseline file if created by prior runs
+    default_file = Path("security_baseline.json")
+    if default_file.exists():
+        default_file.unlink()
+
+# Provide a unique baseline path per test
+@pytest.fixture
+def baseline(tmp_path):
+    return tmp_path / "baseline.json"
+
 @pytest.fixture
 def tmp_baseline(tmp_path):
     return tmp_path / "security_baseline.json"
